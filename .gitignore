@@ -1,0 +1,21 @@
+# Python virtual environment
+/langgraph_env/
+/venv/
+/.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE and editor specific files
+.vscode/
+.idea/
+
+# Environment variables file
+.env
+
+# Operating System generated files
+.DS_Store
+Thumbs.db

@@ -4,7 +4,7 @@
 
 ```
 langgraph_demo
-|-- agent_chatbot.py
+|-- agent_chatbot_systemmessage.py
 |-- prompt.md
 L-- user_api.py
 ```
@@ -12,19 +12,20 @@ L-- user_api.py
 ## File Contents
 
 ---
-### File: `agent_chatbot.py`
+### File: `agent_chatbot_systemmessage.py`
 
 ````python
 #conda env langgraph_env ,Python版本 3.13.5
 #如果要使用fastapi server,先把user_api.py跑起来：python user_api.py
 #如果要使用自定义prompt，查看prompt.md文件
+#prompt管理使用SystemMessage每次在query的头部添加systemmessage
 import os
 import json
 from typing import TypedDict, Annotated, Sequence
 import operator
 from datetime import datetime
 import requests
-from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_deepseek import ChatDeepSeek
@@ -177,7 +178,7 @@ class ReActAgent:
     """
     一个基于 LangGraph 实现的、具备工具调用能力的 ReAct 风格 Agent。
     """
-    def __init__(self, model: BaseChatModel, tools: list):
+    def __init__(self, model: BaseChatModel, tools: list, system_message: str | None = None):
         """
         初始化 Agent。
         - model: 一个绑定了工具的 LangChain ChatModel 实例。
@@ -187,6 +188,7 @@ class ReActAgent:
         self.tools = {t.name: t for t in tools} # 将工具列表转换为字典，方便按名称查找
         self.graph = self._build_graph()
         self.conversation_history = [] # 新增一个列表来存储历史
+        self.system_message = SystemMessage(content=system_message) if system_message is not None else None
 
     def _build_graph(self) -> StateGraph:
         """构建并编译 LangGraph 图。"""
@@ -222,6 +224,7 @@ class ReActAgent:
         """
         messages = state['messages']
         response = self.model.invoke(messages)
+        # print(f"大模型回复：{response}")
         return {"messages": [response]}
 
     def _call_tool(self, state: AgentState) -> dict:
@@ -230,7 +233,59 @@ class ReActAgent:
         这是图中的 "action" 节点。
         """
         last_message = state['messages'][-1]
-        
+        '''
+        last_message example
+        非推理模型中如下，推理模型增加的部分是reasoning_content
+        {
+        'messages': 
+            [AIMessage(
+                content = '', 
+                additional_kwargs = {
+                    #reasoning_content部分仅仅在推理模型章出现
+                    'reasoning_content': "我们被要求查询历史上前天的大事。\n 首先，我们需要确定“前天”的具体日期。今天的日期:  未知，需要查询。\n
+                        - 前天的日期: 通过今天的日期计算得到（月、日）。\n\n
+                        **反思**:\n  A. 目前还没有查询任何概念，所以都没有得到结果。\n  B. 我还没有得到任何要素。\n  C. 未得到的要素：今天的日期，前天的月份和日期。\n\n**思考**:\n  A. 要素间的依赖关系：\n      - 要得到前天的月份和日期，必须先得到今天的日期。\n      - 然后通过计算（减去两天）得到前天的日期，再提取月份和日期。\n
+                        **推理**:\n  由于前天的日期依赖于今天的日期，所以第一步是获取今天的日期。\n\n
+                        **计划**:\n  调用工具`get_today`，无参数。\n\n
+                        **计划校验**:\n  A. 已 知常量：无。\n  B. 当前计划不涉及穷举文件记录。\n  C. 当前计划不依赖其他未获得的要素。\n  D. 当前计划没有对要素取值做假设。\n  E. 子任务未完成，需要继续。\n\n**计划改进**:\n  由于校验通过，我们执行第一步计划：调用`get_today`。\n\n 然后，当我们得到今天的日期后，再计划 下一步。",
+                    'tool_calls': [{
+                            'index': 0,
+                            'id': 'call_0_e03c67f0-17d8-4f54-9a8f-840498745553',
+                            'function': {
+                                'arguments': '{"month":7,"day":13}',
+                                'name': 'get_historical_events_on_date'
+                                },
+                            'type': 'function'
+                            }]
+                    }, 
+                response_metadata = {
+                    'finish_reason': 'tool_calls',
+                    'model_name': 'deepseek-chat',
+                    'system_fingerprint': 'fp_8802369eaa_prod0623_fp8_kvcache'
+                    }, 
+                id = 'run--8c6be684-fc48-42e1-9b16-d94b0fb747f9-0', 
+                tool_calls = [{
+                        'name': 'get_historical_events_on_date',
+                        'args': {
+                            'month': 7,
+                            'day': 13
+                            },
+                        'id': 'call_0_e03c67f0-17d8-4f54-9a8f-840498745553',
+                        'type': 'tool_call'
+                    }], 
+                usage_metadata = {
+                    'input_tokens': 2416,
+                    'output_tokens': 27,
+                    'total_tokens': 2443,
+                    'input_token_details': {
+                        'cache_read': 2368
+                        },
+                    'output_token_details': {}
+                    }
+                )
+            ]
+        }
+        '''
         if not last_message.tool_calls:
             return {}
 
@@ -283,7 +338,8 @@ class ReActAgent:
         - stream: 是否流式打印中间步骤 (默认为 True)。
         返回 Agent 的最终回答。
         """
-        current_messages = self.conversation_history + [HumanMessage(content=query)]
+        initial_messages = [self.system_message] if self.system_message else []
+        current_messages = initial_messages + self.conversation_history + [HumanMessage(content=query)]
         inputs = {"messages": current_messages}
         
         final_answer = "" # 初始化一个变量来存储最终答案
@@ -359,12 +415,56 @@ if __name__ == "__main__":
         get_user_info
     ]
 
+    my_system_prompt = '''
+        你是一个名叫“智多星”的AI助手，说话风趣幽默，像一位博学的朋友。
+        你的任务是尽力回答用户的问题。在回答时，请遵循以下规则：
+        1. 优先使用你掌握的工具来获取最新、最准确的信息。
+        2. 如果工具返回了结果，请基于工具的结果进行总结和回答，不要凭空想象。
+        3. 可以使用emoji表情来增强回答的趣味性。
+        4. 输出形式：
+        根据以下格式说明，输出你的思考过程:
+        **关键概念**: 任务中涉及的组合型概念或实体。已经明确获得取值的关键概念，将其取值完整备注在概念后。
+        **概念拆解**: 将任务中的关键概念拆解为一系列待查询的子要素。每个关键概念一行，后接这个概念的子要素，每个子要素一行，行前以' -'开始。已经明确获得取值的子概念，将其取值完整备注在子概念后。
+        **反思**: 自我反思，观察以前的执行记录，一步步思考以下问题:
+            A. 是否每一个的关键概念或要素的查询都得到了准确的结果?
+            B. 我已经得到哪个要素/概念? 得到的要素/概念取值是否正确?
+            C. 从当前的信息中还不能得到哪些要素/概念。
+        **思考**: 观察执行记录和你的自我反思，并一步步思考下述问题:
+            A. 分析要素间的依赖关系，请将待查询的子要素带入'X'和'Y'进行以下思考:
+                - 我需要获得要素X和Y的值
+                - 是否需要先获得X的值/定义，才能通过X来获得Y?
+                - 如果先获得X，是否可以通过X筛选Y，减少穷举每个Y的代价?
+                - X和Y是否存在在同一数据源中，能否在获取X的同时获取Y?
+                - 是否还有更高效或更聪明的办法来查询一个概念或要素?
+                - 上一次尝试查询一个概念或要素时是否失败了? 如果是，是否可以尝试从另一个资源中再次查询?
+                - 反思，我是否有更合理的方法来查询一个概念或要素?
+            B. 根据以上分析，排列子要素间的查询优先级
+            C. 找出当前需要获得取值的子要素
+            D. 不可以使用“假设”：不要对要素的取值/定义做任何假设，确保你的信息全部来自明确的数据源！
+        **推理**: 根据你的反思与思考，一步步推理被选择的子要素取值的获取方式。如果前一次的计划失败了，请检查输入中是否包含每个概念/要素的明确定义，并尝试细化你的查询描述。
+        **计划**: 详细列出当前动作的执行计划。只计划一步的动作。PLAN ONE STEP ONLY!
+        **计划校验**: 按照一些步骤一步步分析
+            A. 有哪些已知常量可以直接代入此次分析。
+            B. 当前计划是否涉及穷举一个文件中的每条记录?
+                - 如果是，请给出一个更有效的方法，比如按某条件筛选，从而减少计算量;
+                - 否则，请继续下一步。
+            C. 上述分析是否依赖某个要素的取值/定义，且该要素的取值/定义尚未获得？如果是，重新规划当前动作，确保所有依赖的要素的取值/定义都已经获得。
+            D. 当前计划是否对要素的取值/定义做任何假设？如果是，请重新规划当前动作，确保你的信息全部来自对给定的数据源的历史分析，或尝试重新从给定数据源中获取相关信息。
+            E. 如果全部子任务已完成，则不必再调用工具，结束任务。
+        **计划改进**:
+            A. 如何计划校验中的某一步骤无法通过，请改进你的计划；
+            B. 如果你的计划校验全部通过，则不必再调用工具，结束任务。
+            C. 如果全部子任务已完成，则不必再调用工具，结束任务。
+        '''
+    
+
+
     # b. 初始化模型并绑定工具
     # llm = ChatOpenAI(temperature=0, model="gpt-4o") # 使用 gpt-4o 或 gpt-3.5-turbo 等
-    llm = ChatDeepSeek(model="deepseek-chat", temperature=0, streaming=True).bind_tools(tools_list)
+    llm = ChatDeepSeek(model="deepseek-reasoner", temperature=0, streaming=True).bind_tools(tools_list)
 
     # c. 创建 Agent 实例
-    my_agent = ReActAgent(model=llm, tools=tools_list)
+    my_agent = ReActAgent(model=llm, tools=tools_list, system_message=my_system_prompt)
 
     # --- 使用方式一：运行单个查询 ---
     # print("--- 单次查询示例 ---")
