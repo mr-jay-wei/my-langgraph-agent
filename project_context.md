@@ -1,0 +1,587 @@
+# Project Context: langgraph_demo
+
+## Project Structure
+
+```
+langgraph_demo
+|-- agent_chatbot.py
+|-- prompt.md
+L-- user_api.py
+```
+
+## File Contents
+
+---
+### File: `agent_chatbot.py`
+
+````python
+#conda env langgraph_env ,Python版本 3.13.5
+#如果要使用fastapi server,先把user_api.py跑起来：python user_api.py
+#如果要使用自定义prompt，查看prompt.md文件
+import os
+import json
+from typing import TypedDict, Annotated, Sequence
+import operator
+from datetime import datetime
+import requests
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_deepseek import ChatDeepSeek
+from langchain_tavily import TavilySearch
+from langgraph.graph import StateGraph, END
+from pprint import pprint
+from langchain.tools import tool
+# 加载环境变量
+from dotenv import load_dotenv, find_dotenv
+_ = load_dotenv(find_dotenv())
+
+# 【新增】定义调用 FastAPI 服务的工具
+API_BASE_URL = "http://127.0.0.1:8000" # 定义 API 的基础 URL
+
+@tool
+def get_user_info(user_id: str) -> str:
+    """从公司内部系统中查询指定ID的用户信息。
+
+    这个工具用于访问内部用户数据库，以获取特定用户的详细资料，
+    如用户名、电子邮件地址和会员等级。
+
+    Args:
+        user_id (str): 需要查询的用户的唯一标识符，例如 "user_101"。
+
+    Returns:
+        str: 一个描述用户信息的字符串。如果查询成功，会包含用户名、邮箱和会员等级。
+             如果用户ID不存在或发生其他错误，会返回一条明确的错误信息。
+    """
+    print(f"--- [Tool] Calling User API with user_id: {user_id} ---")
+    try:
+        response = requests.get(f"{API_BASE_URL}/users/{user_id}")
+        
+        # 检查 HTTP 响应状态
+        if response.status_code == 200:
+            user_data = response.json()
+            return f"用户信息查询成功：用户名 {user_data['username']}, 邮箱 {user_data['email']}, 会员等级 {user_data['membership_level']}。"
+        elif response.status_code == 404:
+            return f"查询失败：未找到ID为 '{user_id}' 的用户。"
+        else:
+            # 对于其他可能的 HTTP 错误
+            return f"API 请求失败，状态码: {response.status_code}, 详情: {response.text}"
+            
+    except requests.exceptions.ConnectionError:
+        return "API 连接失败。请确保 FastAPI 服务正在运行中。"
+    except Exception as e:
+        return f"调用 API 时发生未知错误: {e}"
+
+@tool
+def get_today() -> str:
+    """获取当前系统的日期。
+
+    这个函数不接收任何参数，它会返回今天的日期。
+
+    Returns:
+        str: 一个表示今天日期的字符串，格式为 'YYYY-MM-DD'。
+    """
+    # 建议使用 ISO 8601 (YYYY-MM-DD) 格式，因为它是一种国际标准，
+    # 对机器（包括LLM）和人类都非常友好和明确。
+    return datetime.today().strftime('%Y-%m-%d')
+
+@tool
+def get_weather(city: str) -> str:
+    """获取指定城市的实时天气情况。
+
+    这个工具可以查询全球任何一个主要城市的当前天气信息。
+    你只需要提供城市名称即可。
+
+    Args:
+        city (str): 需要查询天气的城市名称，例如 "Beijing" 或 "上海"。
+
+    Returns:
+        str: 一个描述该城市当前天气状况的字符串，包括天气现象、温度、体感温度和湿度。
+             如果查询失败，会返回一条错误信息。
+    """
+    # 注意：这个 API 实际上并不需要 `date` 参数来获取实时天气，
+    # 为了让工具更简洁、LLM 更易于使用，我们将其移除。
+    try:
+        # 添加 format=j1 参数可以获取 JSON 格式的简洁数据，对 LLM 更友好
+        response = requests.get(f"https://wttr.in/{city}?format=j1")
+        response.raise_for_status()  # 如果请求失败 (如 404)，会抛出 HTTPError 异常
+        weather_data = response.json()
+        
+        # 从JSON中提取关键信息并格式化为对LLM友好的字符串
+        current_condition = weather_data.get('current_condition', [{}])[0]
+        temp_c = current_condition.get('temp_C')
+        feels_like_c = current_condition.get('FeelsLikeC')
+        weather_desc_list = current_condition.get('weatherDesc', [{}])
+        weather_desc = weather_desc_list[0].get('value') if weather_desc_list else "未知"
+        humidity = current_condition.get('humidity')
+
+        # 检查是否获取到了关键数据
+        if all([temp_c, feels_like_c, weather_desc, humidity]):
+            return (
+                f"{city} 当前天气：{weather_desc}，气温 {temp_c}°C，"
+                f"体感温度 {feels_like_c}°C，湿度 {humidity}%。"
+            )
+        else:
+            return f"未能获取 {city} 的完整天气数据，请稍后重试。"
+
+    except requests.exceptions.RequestException as e:
+        return f"获取天气时网络连接失败：{e}"
+    except Exception as e:
+        return f"处理 {city} 的天气数据时发生未知错误: {e}"
+
+
+@tool
+def get_historical_events_on_date(month: int, day: int) -> str:
+    """
+    查询在指定月份和日期，历史上发生了哪些重大事件。
+
+    这个工具需要你提供月份和日期两个数字作为参数。
+    例如，要查询5月24日的历史事件，你应该调用此工具并传入 month=5, day=24。
+
+    Args:
+        month (int): 月份，一个从 1 到 12 的数字。
+        day (int): 日期，一个从 1 到 31 的数字。
+
+    Returns:
+        str: 一个描述当天历史事件的字符串列表，如果查询失败则返回错误信息。
+    """
+    # Numbers API 是一个很棒的免费 API，用于获取关于数字和日期的趣闻
+    api_url = f"http://numbersapi.com/{month}/{day}/date"
+    
+    try:
+        response = requests.get(api_url, params={"json": True}) # 请求 JSON 格式
+        response.raise_for_status() # 检查 HTTP 错误
+        
+        event_data = response.json()
+        
+        # API 返回的格式是: {"text": "...", "number": ..., "found": ..., "type": "date"}
+        if event_data.get("found"):
+            # 返回找到的历史事件描述
+            return f"在 {month}月{day}日，历史上发生的一件大事是：{event_data['text']}"
+        else:
+            return f"未找到关于 {month}月{day}日 的历史事件记录。"
+
+    except requests.exceptions.RequestException as e:
+        return f"查询历史事件时网络连接失败：{e}"
+    except Exception as e:
+        return f"处理历史事件数据时发生未知错误: {e}"
+
+# -------------------- 1. 定义状态 --------------------
+class AgentState(TypedDict):
+    """定义 Agent 在图中的状态，所有节点共享和修改此状态。"""
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+
+
+# -------------------- 2. 定义 Agent 类 --------------------
+class ReActAgent:
+    """
+    一个基于 LangGraph 实现的、具备工具调用能力的 ReAct 风格 Agent。
+    """
+    def __init__(self, model: BaseChatModel, tools: list):
+        """
+        初始化 Agent。
+        - model: 一个绑定了工具的 LangChain ChatModel 实例。
+        - tools: 一个包含 LangChain 工具实例的列表。
+        """
+        self.model = model
+        self.tools = {t.name: t for t in tools} # 将工具列表转换为字典，方便按名称查找
+        self.graph = self._build_graph()
+        self.conversation_history = [] # 新增一个列表来存储历史
+
+    def _build_graph(self) -> StateGraph:
+        """构建并编译 LangGraph 图。"""
+        workflow = StateGraph(AgentState)
+
+        # 添加节点
+        workflow.add_node("agent", self._call_model)
+        workflow.add_node("action", self._call_tool)
+
+        # 设置入口点
+        workflow.set_entry_point("agent")
+
+        # 添加条件边
+        workflow.add_conditional_edges(
+            "agent",
+            self._should_continue,
+            {
+                "continue": "action",
+                "end": END,
+            },
+        )
+
+        # 添加普通边
+        workflow.add_edge("action", "agent")
+
+        # 编译图
+        return workflow.compile()
+
+    def _call_model(self, state: AgentState) -> dict:
+        """
+        私有方法：调用大模型。
+        这是图中的 "agent" 节点。
+        """
+        messages = state['messages']
+        response = self.model.invoke(messages)
+        return {"messages": [response]}
+
+    def _call_tool(self, state: AgentState) -> dict:
+        """
+        私有方法：调用工具。
+        这是图中的 "action" 节点。
+        """
+        last_message = state['messages'][-1]
+        
+        if not last_message.tool_calls:
+            return {}
+
+        tool_messages = []
+        for tool_call in last_message.tool_calls:
+            tool_name = tool_call['name']
+            if tool_name in self.tools:
+                tool_to_call = self.tools[tool_name]
+                try:
+                    # 调用工具并获取输出
+                    tool_output = tool_to_call.invoke(tool_call['args'])
+                    # 将结构化输出序列化为字符串
+                    tool_output_str = json.dumps(tool_output, ensure_ascii=False)
+                    
+                    tool_messages.append(
+                        ToolMessage(
+                            content=tool_output_str,
+                            tool_call_id=tool_call['id'],
+                        )
+                    )
+                except Exception as e:
+                    error_msg = f"Error executing tool {tool_name}: {e}"
+                    tool_messages.append(
+                        ToolMessage(content=error_msg, tool_call_id=tool_call['id'])
+                    )
+            else:
+                # 如果模型尝试调用一个不存在的工具
+                error_msg = f"Tool '{tool_name}' not found."
+                tool_messages.append(
+                    ToolMessage(content=error_msg, tool_call_id=tool_call['id'])
+                )
+        
+        return {"messages": tool_messages}
+
+    def _should_continue(self, state: AgentState) -> str:
+        """
+        私有方法：决策下一步走向。
+        这是图中的条件边逻辑。
+        """
+        last_message = state['messages'][-1]
+        if last_message.tool_calls:
+            return "continue"
+        else:
+            return "end"
+
+    def run(self, query: str, stream: bool = True) -> str:
+        """
+        运行 Agent 处理单个查询。
+        - query: 用户的输入问题。
+        - stream: 是否流式打印中间步骤 (默认为 True)。
+        返回 Agent 的最终回答。
+        """
+        current_messages = self.conversation_history + [HumanMessage(content=query)]
+        inputs = {"messages": current_messages}
+        
+        final_answer = "" # 初始化一个变量来存储最终答案
+
+        if stream:
+            print(f"--- Running query: {query} ---\n")
+            
+            # --- 只运行一次图 ---
+            for output in self.graph.stream(inputs):
+                # 1. 打印日志（保持不变）
+                print("--- Node Output ---")
+                pprint(output)
+                print("\n")
+
+                # 2. 智能捕获最终答案
+                # 最终答案的特征是：它来自于'agent'节点，并且不包含工具调用
+                for key, value in output.items():
+                    if key == 'agent':
+                        # 检查 'agent' 节点的输出中是否有消息
+                        messages = value.get('messages', [])
+                        if messages:
+                            last_message = messages[-1]
+                            # 如果最后一条消息不是工具调用，那么它就是最终答案
+                            if not last_message.tool_calls:
+                                final_answer = last_message.content
+            if final_answer:
+                # 1. 获取当前用户的提问
+                user_message = HumanMessage(content=query)
+                # 2. 将最终答案包装成 AIMessage
+                agent_message = AIMessage(content=final_answer)
+                # 3. 将这一对 Q&A 追加到长期历史中
+                self.conversation_history.extend([user_message, agent_message])
+            return final_answer
+    
+        else:
+            # 非流式模式保持不变，因为它只运行一次 invoke
+            final_state = self.graph.invoke(inputs)
+            user_message = HumanMessage(content=query)
+            agent_message = AIMessage(content=final_state['messages'][-1].content)
+            self.conversation_history.extend([user_message, agent_message])
+            return final_state['messages'][-1].content
+
+    def chat(self):
+        """启动一个交互式命令行聊天会话。"""
+        print("你好！我是 ReAct Agent。输入 'quit' 或 'exit' 退出。")
+        while True:
+            user_input = input("你: ")
+            if user_input.lower() in ["quit", "exit"]:
+                print("ReAct Agent: 再见！")
+                break
+            
+            try:
+                response = self.run(user_input)
+                print(f"ReAct Agent: {response}")
+            except Exception as e:
+                print(f"ReAct Agent: 抱歉，我遇到了一些麻烦：{e}")
+            
+            print("-" * 30)
+
+
+# -------------------- 3. 主程序入口 --------------------
+if __name__ == "__main__":
+
+    # a. 初始化工具
+    my_search_tool = TavilySearch(name="internet_search_engine", # 自定义 name
+                                description="Use this tool to search the internet for up-to-date information.", # 自定义描述
+                                max_results=2)
+    tools_list = [
+        my_search_tool, 
+        get_today,          # @tool 装饰器让函数本身就可以被当作工具实例使用
+        get_weather,
+        get_historical_events_on_date,
+        get_user_info
+    ]
+
+    # b. 初始化模型并绑定工具
+    # llm = ChatOpenAI(temperature=0, model="gpt-4o") # 使用 gpt-4o 或 gpt-3.5-turbo 等
+    llm = ChatDeepSeek(model="deepseek-chat", temperature=0, streaming=True).bind_tools(tools_list)
+
+    # c. 创建 Agent 实例
+    my_agent = ReActAgent(model=llm, tools=tools_list)
+
+    # --- 使用方式一：运行单个查询 ---
+    # print("--- 单次查询示例 ---")
+    # question = "2024年欧洲杯的冠军是哪支球队？"
+    # answer = my_agent.run(question, stream=True) # 设置 stream=True 查看中间过程
+    # print(f"\n最终答案:\n{answer}")
+
+    # --- 使用方式二：启动交互式聊天 ---
+    print("\n--- 交互式聊天示例 ---")
+    my_agent.chat()
+````
+
+---
+### File: `prompt.md`
+
+````markdown
+当然可以！自主配置 Prompt 是 LangChain 和 `langgraph` 设计的一大亮点，它让你能够从框架的“默认行为”中脱离出来，实现更高级、更个性化的 Agent 行为。
+
+当你觉得默认的 ReAct 风格 Prompt 不足以满足你的需求时，比如：
+*   你想让 Agent 有特定的**身份或个性**（如“你是一个风趣幽默的旅游向导”）。
+*   你想给出更**严格的指令**（如“永远不要猜测，如果信息不足就说不知道”）。
+*   你想改变 Agent **响应的格式**。
+*   你想实现一种**全新的、非 ReAct 风格**的 Agent 逻辑。
+
+你完全可以接管 Prompt 的构建过程。主要有两种方式可以实现：
+
+1.  **简单方式：使用 `SystemMessage`**
+2.  **高级方式：使用 LangChain 表达式语言 (LCEL) 自定义 PromptTemplate**
+
+---
+
+### **方法一：使用 `SystemMessage` (最简单直接)**
+
+这是最简单的方法，适用于在默认 ReAct 行为的基础上，增加系统级的指令、身份设定或规则。
+
+你只需要在每次调用图之前，在 `messages` 列表的**最前面**插入一个 `SystemMessage`。
+
+**如何修改你的代码：**
+
+在你的 `ReActAgent` 类的 `run` 和 `chat` 方法中进行修改。
+
+```python
+# 在 ReActAgent 类中
+
+# ... (其他代码不变)
+
+# 【新增】在类的初始化中定义你的系统消息
+def __init__(self, model: BaseChatModel, tools: list, system_message: str | None = None):
+    self.model = model.bind_tools(tools)
+    self.tools = {t.name: t for t in tools}
+    self.graph = self._build_graph()
+    self.conversation_history = []
+    # 将系统消息字符串包装成 SystemMessage 对象
+    self.system_message = SystemMessage(content=system_message) if system_message is not None else None
+
+def run(self, query: str, stream: bool = True) -> str:
+    # 【修改】在这里注入 SystemMessage
+    initial_messages = [self.system_message] if self.system_message else []
+    current_messages = initial_messages + self.conversation_history + [HumanMessage(content=query)]
+    
+    # 后续逻辑不变
+    inputs = {"messages": current_messages}
+    # ... (run 方法的其余部分)
+
+def chat(self):
+    # 【修改】chat 方法也要做类似修改，确保上下文一致
+    # ...
+    # 在准备输入时
+    initial_messages = [self.system_message] if self.system_message else []
+    current_messages = initial_messages + self.conversation_history + [HumanMessage(content=user_input)]
+    inputs = {"messages": current_messages}
+    # ...
+
+# --- 主程序入口 ---
+if __name__ == "__main__":
+    # ... (工具和模型初始化不变)
+
+    # 【新增】定义你想要的系统 Prompt
+    my_system_prompt = (
+        "你是一个名叫“智多星”的AI助手，说话风趣幽默，像一位博学的朋友。"
+        "你的任务是尽力回答用户的问题。在回答时，请遵循以下规则：\n"
+        "1. 优先使用你掌握的工具来获取最新、最准确的信息。\n"
+        "2. 如果工具返回了结果，请基于工具的结果进行总结和回答，不要凭空想象。\n"
+        "3. 在回答的结尾，俏皮地加上你的署名'——来自你的朋友，智多星'。"
+    )
+
+    # 【修改】在创建 Agent 实例时传入
+    my_agent = ReActAgent(model=llm, tools=tools_list, system_message=my_system_prompt)
+    
+    my_agent.chat()
+```
+
+**工作原理：**
+`SystemMessage` 在对话中扮演着一个“上帝视角”的角色，它为整个对话设定了基调和规则。LangChain 的 ReAct 框架会尊重这个 `SystemMessage`，并将其与它自己的 ReAct 指令结合起来，最终发送给 LLM。这样，LLM 就会在遵循 ReAct 循环的同时，努力扮演你设定的角色和遵守你给出的规则。
+
+---
+
+### **方法二：使用 LCEL 完全自定义 Prompt (更灵活、更强大)**
+
+当你想要彻底改变 Agent 的思考方式，而不仅仅是添加一个身份时，你需要完全重写调用模型的节点。这通常涉及到使用 `ChatPromptTemplate`。
+
+假设你想创建一个 Agent，它在调用工具前会先“自言自语”地解释它为什么这么做。
+
+**如何修改你的代码：**
+
+这次的修改会更集中在 `_call_model` 方法上。
+
+```python
+# 导入 ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
+
+class ReActAgent:
+    def __init__(self, model: BaseChatModel, tools: list):
+        # 注意：这里我们不再在初始化时绑定工具，因为我们将在 prompt 中手动处理
+        self.raw_model = model 
+        self.tools = tools # 保存原始工具列表
+        self.tools_map = {t.name: t for t in tools} # 保存工具字典
+        self.graph = self._build_graph()
+        self.conversation_history = []
+    
+    def _call_model(self, state: AgentState) -> dict:
+        """
+        【重大修改】私有方法：使用自定义 Prompt 调用大模型。
+        """
+        messages = state['messages']
+        
+        # 1. 定义你的 Prompt 模板
+        #    这个模板会接收 'messages' 和 'tools' 作为输入变量
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "你是一个强大的AI助手。你的任务是根据用户的对话历史，决定下一步是直接回答还是使用工具。\n"
+                    "你可以使用以下工具：\n\n{tools}\n\n"
+                    "请分析用户的最新问题。如果你需要使用工具，请以工具调用的形式回应。"
+                    "如果你能直接回答，就直接给出答案。"
+                ),
+                ("placeholder", "{messages}"), # placeholder 会被 messages 列表替换
+            ]
+        )
+        
+        # 2. 将工具渲染成字符串，以便插入到 Prompt 中
+        #    LangChain 有工具可以帮你做这个，但手动做也很简单
+        rendered_tools = "\n".join([f"- {tool.name}: {tool.description}" for tool in self.tools])
+        
+        # 3. 将模型绑定工具，并与 Prompt 组合成一个 chain
+        #    注意：我们在这里才进行工具绑定
+        model_with_tools = self.raw_model.bind_tools(self.tools)
+        chain = prompt | model_with_tools
+        
+        # 4. 调用 chain
+        response = chain.invoke({"messages": messages, "tools": rendered_tools})
+        
+        return {"messages": [response]}
+
+    # ... 其他方法基本不变，除了 __init__ ...
+```
+
+**工作原理：**
+
+1.  **解绑工具**: 在 `__init__` 中，我们不再立即将模型与工具绑定，而是保存原始的模型和工具列表。这给了我们稍后在 Prompt 中操作的灵活性。
+2.  **`ChatPromptTemplate`**: 我们定义了一个包含 `system` 消息和 `placeholder` 的模板。`placeholder` 是一个强大的功能，它允许我们将一个完整的消息列表（如对话历史）动态地插入到 Prompt 的正确位置。
+3.  **渲染工具**: 我们手动将工具列表格式化成一个描述性字符串，并将其作为变量 `tools` 传给 Prompt。
+4.  **构建 LCEL Chain**: `chain = prompt | model_with_tools` 这行代码是 LCEL 的精髓。它创建了一个执行管道：
+    *   首先，输入数据（一个包含 `messages` 和 `tools` 的字典）被送入 `prompt`。
+    *   `prompt` 将输入格式化成一个完整的、准备好的消息列表。
+    *   这个消息列表被“管道”传送到 `model_with_tools`。
+    *   模型执行调用并返回结果。
+5.  **在 `_call_model` 中执行**: 我们用这个自定义的 `chain` 替换了原来简单的 `model.invoke()`。
+
+### **总结与建议**
+
+| 方法 | 优点 | 缺点 | 适用场景 |
+| :--- | :--- | :--- | :--- |
+| **`SystemMessage`** | **简单、快速**，不改变核心逻辑，与默认 ReAct 行为兼容性好。 | 控制力有限，无法改变 ReAct 的根本流程。 | 为 Agent 添加**身份、个性、高级规则**，或给出一般性指示。 |
+| **LCEL 自定义 Prompt** | **控制力极强**，可以完全重新定义 Agent 的思考和行为模式。 | **更复杂**，需要理解 LCEL 和 Prompt Engineering。可能会“破坏”默认的 ReAct 循环，需要你仔细设计。 | 创建**非标准 Agent**（如 Plan-and-Execute Agent），或对 Prompt 的每个细节都有严格要求。 |
+
+对于你的情况，我强烈建议**从方法一开始**。它已经能满足绝大多数的定制化需求，而且风险最低。当你发现 `SystemMessage` 已经无法满足你的需求，想要从根本上改变 Agent 的决策逻辑时，再转向更强大的方法二。
+````
+
+---
+### File: `user_api.py`
+
+````python
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+
+app = FastAPI(
+    title="User Info API",
+    description="一个简单的 API，用于根据用户ID查询模拟的用户信息。",
+    version="1.0.0",
+)
+
+# 模拟的数据库
+fake_user_db = {
+    "user_101": {"username": "Alice", "email": "alice@example.com", "membership_level": "Gold"},
+    "user_102": {"username": "Bob", "email": "bob@example.com", "membership_level": "Silver"},
+    "user_103": {"username": "Charlie", "email": "charlie@example.com", "membership_level": "Bronze"},
+}
+
+class UserInfo(BaseModel):
+    username: str
+    email: str
+    membership_level: str
+
+@app.get("/users/{user_id}", response_model=UserInfo, tags=["Users"])
+def get_user_by_id(user_id: str):
+    """
+    根据用户ID获取用户信息。
+    """
+    if user_id in fake_user_db:
+        return fake_user_db[user_id]
+    raise HTTPException(status_code=404, detail="User not found")
+
+if __name__ == "__main__":
+    # 运行这个服务。它会监听在 http://127.0.0.1:8000
+    uvicorn.run("user_api:app", host="127.0.0.1", port=8000, reload=True)
+````
+
