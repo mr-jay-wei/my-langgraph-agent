@@ -167,7 +167,7 @@ class ReActAgent:
         - model: 一个绑定了工具的 LangChain ChatModel 实例。
         - tools: 一个包含 LangChain 工具实例的列表。
         """
-        self.model = model
+        self.model = model.bind_tools(tools)
         self.tools = {t.name: t for t in tools} # 将工具列表转换为字典，方便按名称查找
         self.graph = self._build_graph()
         self.conversation_history = [] # 新增一个列表来存储历史
@@ -444,7 +444,7 @@ if __name__ == "__main__":
 
     # b. 初始化模型并绑定工具
     # llm = ChatOpenAI(temperature=0, model="gpt-4o") # 使用 gpt-4o 或 gpt-3.5-turbo 等
-    llm = ChatDeepSeek(model="deepseek-reasoner", temperature=0, streaming=True).bind_tools(tools_list)
+    llm = ChatDeepSeek(model="deepseek-chat", temperature=0, streaming=True)
 
     # c. 创建 Agent 实例
     my_agent = ReActAgent(model=llm, tools=tools_list, system_message=my_system_prompt)
