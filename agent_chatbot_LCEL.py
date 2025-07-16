@@ -1,7 +1,7 @@
 #conda env langgraph_env ,Python版本 3.13.5
 #如果要使用fastapi server,先把user_api.py跑起来：python user_api.py
-#如果要使用自定义prompt，查看prompt.md文件
-#prompt管理使用SystemMessage每次在query的头部添加systemmessage
+
+
 import os
 import json
 from typing import TypedDict, Annotated, Sequence
@@ -13,8 +13,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_deepseek import ChatDeepSeek
-from langchain_tavily import TavilySearch
+# from langchain_tavily import TavilySearch  # 暂时注释掉，避免模块导入问题
+from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.graph import StateGraph, END
+from langchain.tools.render import render_text_description
 from pprint import pprint
 from langchain.tools import tool
 # 加载环境变量
@@ -24,39 +26,40 @@ _ = load_dotenv(find_dotenv())
 # 【新增】定义调用 FastAPI 服务的工具
 API_BASE_URL = "http://127.0.0.1:8000" # 定义 API 的基础 URL
 
-@tool
-def get_user_info(user_id: str) -> str:
-    """从公司内部系统中查询指定ID的用户信息。
+# @tool
+# def get_user_info(user_id: str) -> str:
+#     """从公司内部系统中查询指定ID的用户信息。
 
-    这个工具用于访问内部用户数据库，以获取特定用户的详细资料，
-    如用户名、电子邮件地址和会员等级。
+#     这个工具用于访问内部用户数据库，以获取特定用户的详细资料，
+#     如用户名、电子邮件地址和会员等级。
 
-    Args:
-        user_id (str): 需要查询的用户的唯一标识符，例如 "user_101"。
+#     Args:
+#         user_id (str): 需要查询的用户的唯一标识符，例如 "user_101"。
 
-    Returns:
-        str: 一个描述用户信息的字符串。如果查询成功，会包含用户名、邮箱和会员等级。
-             如果用户ID不存在或发生其他错误，会返回一条明确的错误信息。
-    """
-    print(f"--- [Tool] Calling User API with user_id: {user_id} ---")
-    try:
-        response = requests.get(f"{API_BASE_URL}/users/{user_id}")
+#     Returns:
+#         str: 一个描述用户信息的字符串。如果查询成功，会包含用户名、邮箱和会员等级。
+#              如果用户ID不存在或发生其他错误，会返回一条明确的错误信息。
+#     """
+#     print(f"--- [Tool] Calling User API with user_id: {user_id} ---")
+#     try:
+#         response = requests.get(f"{API_BASE_URL}/users/{user_id}")
         
-        # 检查 HTTP 响应状态
-        if response.status_code == 200:
-            user_data = response.json()
-            return f"用户信息查询成功：用户名 {user_data['username']}, 邮箱 {user_data['email']}, 会员等级 {user_data['membership_level']}。"
-        elif response.status_code == 404:
-            return f"查询失败：未找到ID为 '{user_id}' 的用户。"
-        else:
-            # 对于其他可能的 HTTP 错误
-            return f"API 请求失败，状态码: {response.status_code}, 详情: {response.text}"
+#         # 检查 HTTP 响应状态
+#         if response.status_code == 200:
+#             user_data = response.json()
+#             return f"用户信息查询成功：用户名 {user_data['username']}, 邮箱 {user_data['email']}, 会员等级 {user_data['membership_level']}。"
+#         elif response.status_code == 404:
+#             return f"查询失败：未找到ID为 '{user_id}' 的用户。"
+#         else:
+#             # 对于其他可能的 HTTP 错误
+#             return f"API 请求失败，状态码: {response.status_code}, 详情: {response.text}"
             
-    except requests.exceptions.ConnectionError:
-        return "API 连接失败。请确保 FastAPI 服务正在运行中。"
-    except Exception as e:
-        return f"调用 API 时发生未知错误: {e}"
+#     except requests.exceptions.ConnectionError:
+#         return "API 连接失败。请确保 FastAPI 服务正在运行中。"
+#     except Exception as e:
+#         return f"调用 API 时发生未知错误: {e}"
 
+# 测试：如果改成注释会怎样？
 @tool
 def get_today() -> str:
     """获取当前系统的日期。
@@ -66,8 +69,6 @@ def get_today() -> str:
     Returns:
         str: 一个表示今天日期的字符串，格式为 'YYYY-MM-DD'。
     """
-    # 建议使用 ISO 8601 (YYYY-MM-DD) 格式，因为它是一种国际标准，
-    # 对机器（包括LLM）和人类都非常友好和明确。
     return datetime.today().strftime('%Y-%m-%d')
 
 @tool
@@ -84,12 +85,10 @@ def get_weather(city: str) -> str:
         str: 一个描述该城市当前天气状况的字符串，包括天气现象、温度、体感温度和湿度。
              如果查询失败，会返回一条错误信息。
     """
-    # 注意：这个 API 实际上并不需要 `date` 参数来获取实时天气，
-    # 为了让工具更简洁、LLM 更易于使用，我们将其移除。
     try:
-        # 添加 format=j1 参数可以获取 JSON 格式的简洁数据，对 LLM 更友好
-        response = requests.get(f"https://wttr.in/{city}?format=j1")
-        response.raise_for_status()  # 如果请求失败 (如 404)，会抛出 HTTPError 异常
+        # 添加超时和重试机制
+        response = requests.get(f"https://wttr.in/{city}?format=j1", timeout=10)
+        response.raise_for_status()
         weather_data = response.json()
         
         # 从JSON中提取关键信息并格式化为对LLM友好的字符串
@@ -109,11 +108,14 @@ def get_weather(city: str) -> str:
         else:
             return f"未能获取 {city} 的完整天气数据，请稍后重试。"
 
+    except requests.exceptions.Timeout:
+        return f"获取 {city} 天气信息超时，请检查网络连接或稍后重试。"
+    except requests.exceptions.ConnectionError:
+        return f"无法连接到天气服务，请检查网络连接。如果在中国大陆，可能需要使用代理访问国外服务。"
     except requests.exceptions.RequestException as e:
-        return f"获取天气时网络连接失败：{e}"
+        return f"获取天气时网络请求失败：{e}"
     except Exception as e:
         return f"处理 {city} 的天气数据时发生未知错误: {e}"
-
 
 @tool
 def get_historical_events_on_date(month: int, day: int) -> str:
@@ -134,8 +136,8 @@ def get_historical_events_on_date(month: int, day: int) -> str:
     api_url = f"http://numbersapi.com/{month}/{day}/date"
     
     try:
-        response = requests.get(api_url, params={"json": True}) # 请求 JSON 格式
-        response.raise_for_status() # 检查 HTTP 错误
+        response = requests.get(api_url, params={"json": True}, timeout=10)
+        response.raise_for_status()
         
         event_data = response.json()
         
@@ -146,8 +148,12 @@ def get_historical_events_on_date(month: int, day: int) -> str:
         else:
             return f"未找到关于 {month}月{day}日 的历史事件记录。"
 
+    except requests.exceptions.Timeout:
+        return f"查询 {month}月{day}日 历史事件超时，请检查网络连接或稍后重试。"
+    except requests.exceptions.ConnectionError:
+        return f"无法连接到历史事件服务，请检查网络连接。如果在中国大陆，可能需要使用代理访问国外服务。"
     except requests.exceptions.RequestException as e:
-        return f"查询历史事件时网络连接失败：{e}"
+        return f"查询历史事件时网络请求失败：{e}"
     except Exception as e:
         return f"处理历史事件数据时发生未知错误: {e}"
 
@@ -174,6 +180,16 @@ class ReActAgent:
         self.graph = self._build_graph()
         self.conversation_history = []
         # self.system_message = SystemMessage(content=system_message) if system_message is not None else None
+        
+        # Token 统计
+        self.token_stats = {
+            'total_input_tokens': 0,
+            'total_output_tokens': 0,
+            'total_cache_tokens': 0,
+            'effective_input_tokens': 0,  # 实际需要计费的输入 token
+            'total_requests': 0,
+            'session_start_time': datetime.now()
+        }
 
     def _build_graph(self) -> StateGraph:
         """构建并编译 LangGraph 图。"""
@@ -207,26 +223,72 @@ class ReActAgent:
         【重大修改】私有方法：使用自定义 Prompt 调用大模型。
         """
         messages = state['messages']
-        
+        print(f"llm message: {messages}")
         # 1. 定义你的 Prompt 模板
         #    这个模板会接收 'messages' 和 'tools' 作为输入变量
         prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
-                    "你是一个强大的AI助手。你的任务是根据用户的对话历史，决定下一步是直接回答还是使用工具。\n"
-                    "你可以使用以下工具：\n\n{tools}\n\n"
-                    "请分析用户的最新问题。如果你需要使用工具，请以工具调用的形式回应。"
-                    "如果你能直接回答，就直接给出答案。"
+                    '''
+                    你是一个最顶级的AI助手，你的任务是尽力回答用户的问题。在回答时，请遵循以下规则：
+                    1. 如果目前的信息已经足以回复问题，就直接给出答案。
+                    2. 优先使用你掌握的工具来获取最新、最准确的信息。所有工具信息如下: \n\n{tools}\n\n
+                    3. 如果工具返回了结果，请基于工具的结果进行总结和回答，不要凭空想象。
+                    4. 输出形式：
+                    根据以下格式说明，输出你的思考过程:
+                    **关键概念**: 任务中涉及的组合型概念或实体。已经明确获得取值的关键概念，将其取值完整备注在概念后。
+                    **概念拆解**: 将任务中的关键概念拆解为一系列待查询的子要素。每个关键概念一行，后接这个概念的子要素，每个子要素一行，行前以' -'开始。已经明确获得取值的子概念，将其取值完整备注在子概念后。
+                    **反思**: 自我反思，观察以前的执行记录，一步步思考以下问题:
+                        A. 是否每一个的关键概念或子要素的查询都得到了准确的结果?
+                        B. 我已经得到哪个子要素/概念? 得到的子要素/概念取值是否正确?
+                        C. 从当前的信息中还不能得到哪些子要素/概念。
+                    **思考**: 观察执行记录和你的自我反思，并一步步思考下述问题:
+                        A. 分析子要素间的依赖关系，请将待查询的子要素带入'X'和'Y'进行以下思考:
+                            - 我需要获得子要素X和Y的值
+                            - 是否需要先获得X的值/定义，才能通过X来获得Y?
+                            - 如果先获得X，是否可以通过X筛选Y，减少穷举每个Y的代价?
+                            - X和Y是否存在在同一数据源中，能否在获取X的同时获取Y?
+                            - 是否还有更高效或更聪明的办法来查询一个概念或子要素?
+                            - 上一次尝试查询一个概念或子要素时是否失败了? 如果是，是否可以尝试从另一个资源中再次查询?
+                            - 反思，我是否有更合理的方法来查询一个概念或子要素?
+                        B. 根据以上分析，排列子要素间的查询优先级
+                        C. 找出当前需要获得取值的子要素
+                        D. 不可以使用“假设”：不要对子要素的取值/定义做任何假设，确保你的信息全部来自明确的数据源！
+                    **推理**: 根据你的反思与思考，一步步推理被选择的子要素取值的获取方式。如果前一次的计划失败了，请检查输入中是否包含每个概念/子要素的明确定义，并尝试细化你的查询描述。
+                    **计划**: 详细列出当前动作的执行计划。只计划一步的动作。PLAN ONE STEP ONLY!
+                    **计划校验**: 按照一些步骤一步步分析
+                        A. 有哪些已知常量可以直接代入此次分析。
+                        B. 当前计划是否涉及穷举一个文件中的每条记录?
+                            - 如果是，请给出一个更有效的方法，比如按某条件筛选，从而减少计算量;
+                            - 否则，请继续下一步。
+                        C. 上述分析是否依赖某个子要素的取值/定义，且该子要素的取值/定义尚未获得？如果是，重新规划当前动作，确保所有依赖的子要素的取值/定义都已经获得。
+                        D. 当前计划是否对子要素的取值/定义做任何假设？如果是，请重新规划当前动作，确保你的信息全部来自对给定的数据源的历史分析，或尝试重新从给定数据源中获取相关信息。
+                        E. 如果全部子任务已完成，则不必再调用工具，结束任务。
+                    **计划改进**:
+                        A. 如何计划校验中的某一步骤无法通过，请改进你的计划；
+                        B. 如果你的计划校验全部通过，则不必再调用工具，结束任务。
+                        C. 如果全部子任务已完成，则不必再调用工具，结束任务。
+                    '''
                 ),
                 ("placeholder", "{messages}"), # placeholder 会被 messages 列表替换
             ]
         )
         
         # 2. 将工具渲染成字符串，以便插入到 Prompt 中
-        #    LangChain 有工具可以帮你做这个，但手动做也很简单
-        rendered_tools = "\n".join([f"- {tool.name}: {tool.description}" for tool in self.tools])
+        # 方法一：手动渲染（当前使用的方法）
+        # rendered_tools = "\n".join([f"- {tool.name}: {tool.description}" for tool in self.tools])
         
+        # 方法二：使用 LangChain 官方的工具渲染函数（可选）
+        
+        rendered_tools = render_text_description(self.tools)
+        
+        # 调试信息（可以注释掉以减少输出）
+        # print(f"self.tools: {type(self.tools)}")
+        # print(f"self.tools: {self.tools}")
+        # print(f"Tools type: {type(rendered_tools)}")
+        # print(f"Rendered tools: {rendered_tools}")
+
         # 3. 将模型绑定工具，并与 Prompt 组合成一个 chain
         #    注意：我们在这里才进行工具绑定
         model_with_tools = self.raw_model.bind_tools(self.tools)
@@ -234,8 +296,68 @@ class ReActAgent:
         
         # 4. 调用 chain
         response = chain.invoke({"messages": messages, "tools": rendered_tools})
+        # response = chain.invoke({"messages": messages, "tools": ''})
+
+        # 统计 token 使用情况
+        self._update_token_stats(response)
         
         return {"messages": [response]}
+
+    def _update_token_stats(self, response):
+        """更新 token 统计信息"""
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            usage = response.usage_metadata
+            
+            # 更新总计数
+            self.token_stats['total_input_tokens'] += usage.get('input_tokens', 0)
+            self.token_stats['total_output_tokens'] += usage.get('output_tokens', 0)
+            self.token_stats['total_requests'] += 1
+            
+            # 计算缓存 token 和有效 token
+            input_token_details = usage.get('input_token_details', {})
+            cache_read = input_token_details.get('cache_read', 0)
+            
+            self.token_stats['total_cache_tokens'] += cache_read
+            effective_input = usage.get('input_tokens', 0) - cache_read
+            self.token_stats['effective_input_tokens'] += effective_input
+            
+            # 打印当前请求的统计信息
+            print(f"📊 本次请求 Token 统计:")
+            print(f"   输入: {usage.get('input_tokens', 0)} (缓存: {cache_read}, 有效: {effective_input})")
+            print(f"   输出: {usage.get('output_tokens', 0)}")
+            print(f"   总计: {usage.get('total_tokens', 0)}")
+
+    def get_token_summary(self) -> dict:
+        """获取 token 使用摘要"""
+        session_duration = datetime.now() - self.token_stats['session_start_time']
+        
+        return {
+            'session_duration': str(session_duration).split('.')[0],  # 去掉微秒
+            'total_requests': self.token_stats['total_requests'],
+            'total_input_tokens': self.token_stats['total_input_tokens'],
+            'total_output_tokens': self.token_stats['total_output_tokens'],
+            'total_cache_tokens': self.token_stats['total_cache_tokens'],
+            'effective_input_tokens': self.token_stats['effective_input_tokens'],
+            'cache_efficiency': f"{(self.token_stats['total_cache_tokens'] / max(self.token_stats['total_input_tokens'], 1) * 100):.1f}%",
+            'total_effective_tokens': self.token_stats['effective_input_tokens'] + self.token_stats['total_output_tokens']
+        }
+
+    def print_token_summary(self):
+        """打印 token 使用摘要"""
+        summary = self.get_token_summary()
+        
+        print("\n" + "="*50)
+        print("📈 会话 Token 使用统计")
+        print("="*50)
+        print(f"会话时长: {summary['session_duration']}")
+        print(f"总请求数: {summary['total_requests']}")
+        print(f"总输入 Token: {summary['total_input_tokens']}")
+        print(f"  - 缓存 Token: {summary['total_cache_tokens']} ({summary['cache_efficiency']})")
+        print(f"  - 有效输入 Token: {summary['effective_input_tokens']}")
+        print(f"总输出 Token: {summary['total_output_tokens']}")
+        print(f"实际计费 Token: {summary['total_effective_tokens']}")
+        print(f"缓存节省比例: {summary['cache_efficiency']}")
+        print("="*50)
 
     def _call_tool(self, state: AgentState) -> dict:
         """
@@ -243,6 +365,9 @@ class ReActAgent:
         这是图中的 "action" 节点。
         """
         last_message = state['messages'][-1]
+        #打印这个last_message
+        # print(f"tool message: {last_message}")
+        
         '''
         last_message example
         非推理模型中如下，推理模型增加的部分是reasoning_content
@@ -395,11 +520,19 @@ class ReActAgent:
     def chat(self):
         """启动一个交互式命令行聊天会话。"""
         print("你好！我是 ReAct Agent。输入 'quit' 或 'exit' 退出。")
+        print("输入 'stats' 可以查看当前会话的 token 统计信息。")
+        
         while True:
             user_input = input("你: ")
             if user_input.lower() in ["quit", "exit"]:
                 print("ReAct Agent: 再见！")
+                # 在退出时显示完整的 token 统计
+                self.print_token_summary()
                 break
+            elif user_input.lower() == "stats":
+                # 显示当前统计信息
+                self.print_token_summary()
+                continue
             
             try:
                 response = self.run(user_input)
@@ -414,15 +547,15 @@ class ReActAgent:
 if __name__ == "__main__":
 
     # a. 初始化工具
-    my_search_tool = TavilySearch(name="internet_search_engine", # 自定义 name
+    # 由于网络连接问题，暂时移除需要外网访问的工具
+    my_search_tool = TavilySearchResults(name="internet_search_engine", # 自定义 name
                                 description="Use this tool to search the internet for up-to-date information.", # 自定义描述
                                 max_results=2)
     tools_list = [
-        my_search_tool, 
+        my_search_tool,     # 搜索工具
         get_today,          # @tool 装饰器让函数本身就可以被当作工具实例使用
-        get_weather,
-        get_historical_events_on_date,
-        get_user_info
+        get_weather,        # 已添加网络错误处理
+        get_historical_events_on_date  # 已添加网络错误处理
     ]
 
     my_system_prompt = '''
