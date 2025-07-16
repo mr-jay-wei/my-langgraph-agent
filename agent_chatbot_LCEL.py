@@ -1,6 +1,6 @@
 #conda env langgraph_env ,Python版本 3.13.5
-#如果要使用fastapi server,先把user_api.py跑起来：python user_api.py
-
+#如果要使用fastapi server,先把prox关闭，user_api.py跑起来：python user_api.py
+#使用python client.py启动项目
 
 import os
 import json
@@ -196,15 +196,15 @@ class ReActAgent:
         workflow = StateGraph(AgentState)
 
         # 添加节点
-        workflow.add_node("agent", self._call_model)
+        workflow.add_node("agent_llm", self._call_model)
         workflow.add_node("action", self._call_tool)
 
         # 设置入口点
-        workflow.set_entry_point("agent")
+        workflow.set_entry_point("agent_llm")
 
         # 添加条件边
         workflow.add_conditional_edges(
-            "agent",
+            "agent_llm",
             self._should_continue,
             {
                 "continue": "action",
@@ -213,7 +213,7 @@ class ReActAgent:
         )
 
         # 添加普通边
-        workflow.add_edge("action", "agent")
+        workflow.add_edge("action", "agent_llm")
 
         # 编译图
         return workflow.compile()
@@ -233,7 +233,7 @@ class ReActAgent:
                     '''
                     你是一个最顶级的AI助手，你的任务是尽力回答用户的问题。在回答时，请遵循以下规则：
                     1. 如果目前的信息已经足以回复问题，就直接给出答案。
-                    2. 优先使用你掌握的工具来获取最新、最准确的信息。所有工具信息如下: \n\n{tools}\n\n
+                    2. 优先使用你掌握的工具来获取最新、最准确的信息。确保每次只调用一个工具。所有工具信息如下: \n\n{tools}\n\n
                     3. 如果工具返回了结果，请基于工具的结果进行总结和回答，不要凭空想象。
                     4. 输出形式：
                     根据以下格式说明，输出你的思考过程:
@@ -490,10 +490,10 @@ class ReActAgent:
                 print("\n")
 
                 # 2. 智能捕获最终答案
-                # 最终答案的特征是：它来自于'agent'节点，并且不包含工具调用
+                # 最终答案的特征是：它来自于'agent_llm'节点，并且不包含工具调用
                 for key, value in output.items():
-                    if key == 'agent':
-                        # 检查 'agent' 节点的输出中是否有消息
+                    if key == 'agent_llm':
+                        # 检查 'agent_llm' 节点的输出中是否有消息
                         messages = value.get('messages', [])
                         if messages:
                             last_message = messages[-1]
