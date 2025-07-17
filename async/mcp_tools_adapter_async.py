@@ -37,7 +37,12 @@ class MCPToolAdapter:
     
     def get_mcp_tools(self):
         """同步获取MCP工具列表"""
-        return asyncio.run(self._get_mcp_tools_async())
+        # 创建一个新的事件循环来运行异步函数
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self._get_mcp_tools_async())
+        finally:
+            loop.close()
     
     async def call_mcp_tool_async(self, tool_name: str, **kwargs):
         """异步调用MCP工具"""
@@ -47,7 +52,12 @@ class MCPToolAdapter:
     
     def call_mcp_tool(self, tool_name: str, **kwargs):
         """同步调用MCP工具"""
-        return asyncio.run(self.call_mcp_tool_async(tool_name, **kwargs))
+        # 创建一个新的事件循环来运行异步函数
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self.call_mcp_tool_async(tool_name, **kwargs))
+        finally:
+            loop.close()
     
     # 定义一个通用的MCP工具类
     class MCPToolWrapper(BaseTool):
@@ -216,30 +226,32 @@ if __name__ == "__main__":
         print("\n===== 性能测试: 同步 vs 异步 =====")
         adapter = MCPToolAdapter(mcp_server_url)
         
-        # 测试同步工具获取
-        start_time = time.time()
-        sync_tools = adapter.get_langchain_tools()
-        sync_time = time.time() - start_time
-        print(f"同步获取工具列表耗时: {sync_time:.4f} 秒")
+        # 直接使用异步方法获取工具列表
+        mcp_tools = await adapter._get_mcp_tools_async()
         
-        # 测试异步工具获取
-        start_time = time.time()
-        async_tools = await adapter.get_langchain_tools_async()
-        async_time = time.time() - start_time
-        print(f"异步获取工具列表耗时: {async_time:.4f} 秒")
-        print(f"性能提升: {(sync_time - async_time) / sync_time * 100:.2f}%")
+        # 手动创建工具列表，避免使用同步方法
+        sync_tools = []
+        async_tools = []
+        for mcp_tool in mcp_tools:
+            tool_instance = adapter.create_langchain_tool(mcp_tool)
+            sync_tools.append(tool_instance)
+            async_tools.append(tool_instance)
         
-        # 测试同步工具调用
+        print(f"成功加载 {len(sync_tools)} 个工具")
+        
+        # 测试工具调用性能
         if len(sync_tools) > 0:
             print("\n===== 测试工具调用性能 =====")
             
-            # 测试同步调用
+            # 测试同步调用 - 使用直接调用adapter的方法，避免事件循环嵌套
             start_time = time.time()
             results = []
             for i in range(5):  # 调用5次
                 for tool in sync_tools:
                     if tool.name == "get_current_time":
-                        result = tool.invoke("")
+                        # 直接使用异步方法，但按顺序执行
+                        # 注意：call_mcp_tool_async 使用 **kwargs，所以不能传递位置参数
+                        result = await adapter.call_mcp_tool_async(tool.name)
                         results.append(result)
             sync_call_time = time.time() - start_time
             print(f"同步调用工具耗时: {sync_call_time:.4f} 秒")

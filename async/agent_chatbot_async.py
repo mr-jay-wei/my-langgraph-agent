@@ -78,53 +78,6 @@ async def get_today_async() -> str:
     return datetime.today().strftime('%Y-%m-%d')
 
 @tool
-async def get_weather_async(city: str) -> str:
-    """获取指定城市的实时天气情况 (异步版本)。
-
-    这个工具可以查询全球任何一个主要城市的当前天气信息。
-    你只需要提供城市名称即可。
-
-    Args:
-        city (str): 需要查询天气的城市名称，例如 "Beijing" 或 "上海"。
-
-    Returns:
-        str: 一个描述该城市当前天气状况的字符串，包括天气现象、温度、体感温度和湿度。
-             如果查询失败，会返回一条错误信息。
-    """
-    try:
-        # 添加超时和重试机制
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://wttr.in/{city}?format=j1", timeout=10) as response:
-                response.raise_for_status()
-                weather_data = await response.json()
-                
-                # 从JSON中提取关键信息并格式化为对LLM友好的字符串
-                current_condition = weather_data.get('current_condition', [{}])[0]
-                temp_c = current_condition.get('temp_C')
-                feels_like_c = current_condition.get('FeelsLikeC')
-                weather_desc_list = current_condition.get('weatherDesc', [{}])
-                weather_desc = weather_desc_list[0].get('value') if weather_desc_list else "未知"
-                humidity = current_condition.get('humidity')
-
-                # 检查是否获取到了关键数据
-                if all([temp_c, feels_like_c, weather_desc, humidity]):
-                    return (
-                        f"{city} 当前天气：{weather_desc}，气温 {temp_c}°C，"
-                        f"体感温度 {feels_like_c}°C，湿度 {humidity}%。"
-                    )
-                else:
-                    return f"未能获取 {city} 的完整天气数据，请稍后重试。"
-
-    except asyncio.TimeoutError:
-        return f"获取 {city} 天气信息超时，请检查网络连接或稍后重试。"
-    except aiohttp.ClientConnectorError:
-        return f"无法连接到天气服务，请检查网络连接。如果在中国大陆，可能需要使用代理访问国外服务。"
-    except aiohttp.ClientError as e:
-        return f"获取天气时网络请求失败：{e}"
-    except Exception as e:
-        return f"处理 {city} 的天气数据时发生未知错误: {e}"
-
-@tool
 async def get_historical_events_on_date_async(month: int, day: int) -> str:
     """
     查询在指定月份和日期，历史上发生了哪些重大事件 (异步版本)。
@@ -168,8 +121,7 @@ async def get_historical_events_on_date_async(month: int, day: int) -> str:
 class AgentState(TypedDict):
     """定义 Agent 在图中的状态，所有节点共享和修改此状态。"""
     messages: Annotated[Sequence[BaseMessage], operator.add]
-# -----
---------------- 2. 定义 Agent 类 --------------------
+# -------------------- 2. 定义 Agent 类 --------------------
 class AsyncReActAgent:
     """
     一个基于 LangGraph 实现的、具备工具调用能力的 ReAct 风格 Agent (异步版本)。
@@ -195,6 +147,63 @@ class AsyncReActAgent:
             'total_requests': 0,
             'session_start_time': datetime.now()
         }
+
+  
+    def _update_token_stats(self, response):
+        """更新 token 统计信息"""
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            usage = response.usage_metadata
+            
+            # 更新总计数
+            self.token_stats['total_input_tokens'] += usage.get('input_tokens', 0)
+            self.token_stats['total_output_tokens'] += usage.get('output_tokens', 0)
+            self.token_stats['total_requests'] += 1
+            
+            # 计算缓存 token 和有效 token
+            input_token_details = usage.get('input_token_details', {})
+            cache_read = input_token_details.get('cache_read', 0)
+            
+            self.token_stats['total_cache_tokens'] += cache_read
+            effective_input = usage.get('input_tokens', 0) - cache_read
+            self.token_stats['effective_input_tokens'] += effective_input
+            
+            # 打印当前请求的统计信息
+            print(f"📊 本次请求 Token 统计:")
+            print(f"   输入: {usage.get('input_tokens', 0)} (缓存: {cache_read}, 有效: {effective_input})")
+            print(f"   输出: {usage.get('output_tokens', 0)}")
+            print(f"   总计: {usage.get('total_tokens', 0)}")
+
+    def get_token_summary(self) -> dict:
+        """获取 token 使用摘要"""
+        session_duration = datetime.now() - self.token_stats['session_start_time']
+        
+        return {
+            'session_duration': str(session_duration).split('.')[0],  # 去掉微秒
+            'total_requests': self.token_stats['total_requests'],
+            'total_input_tokens': self.token_stats['total_input_tokens'],
+            'total_output_tokens': self.token_stats['total_output_tokens'],
+            'total_cache_tokens': self.token_stats['total_cache_tokens'],
+            'effective_input_tokens': self.token_stats['effective_input_tokens'],
+            'cache_efficiency': f"{(self.token_stats['total_cache_tokens'] / max(self.token_stats['total_input_tokens'], 1) * 100):.1f}%",
+            'total_effective_tokens': self.token_stats['effective_input_tokens'] + self.token_stats['total_output_tokens']
+        }
+
+    def print_token_summary(self):
+        """打印 token 使用摘要"""
+        summary = self.get_token_summary()
+        
+        print("\n" + "="*50)
+        print("📈 会话 Token 使用统计")
+        print("="*50)
+        print(f"会话时长: {summary['session_duration']}")
+        print(f"总请求数: {summary['total_requests']}")
+        print(f"总输入 Token: {summary['total_input_tokens']}")
+        print(f"  - 缓存 Token: {summary['total_cache_tokens']} ({summary['cache_efficiency']})")
+        print(f"  - 有效输入 Token: {summary['effective_input_tokens']}")
+        print(f"总输出 Token: {summary['total_output_tokens']}")
+        print(f"实际计费 Token: {summary['total_effective_tokens']}")
+        print(f"缓存节省比例: {summary['cache_efficiency']}")
+        print("="*50)
 
     def _build_graph(self) -> StateGraph:
         """构建并编译 LangGraph 图。"""
@@ -294,62 +303,7 @@ class AsyncReActAgent:
         # 统计 token 使用情况
         self._update_token_stats(response)
         
-        return {"messages": [response]}    de
-f _update_token_stats(self, response):
-        """更新 token 统计信息"""
-        if hasattr(response, 'usage_metadata') and response.usage_metadata:
-            usage = response.usage_metadata
-            
-            # 更新总计数
-            self.token_stats['total_input_tokens'] += usage.get('input_tokens', 0)
-            self.token_stats['total_output_tokens'] += usage.get('output_tokens', 0)
-            self.token_stats['total_requests'] += 1
-            
-            # 计算缓存 token 和有效 token
-            input_token_details = usage.get('input_token_details', {})
-            cache_read = input_token_details.get('cache_read', 0)
-            
-            self.token_stats['total_cache_tokens'] += cache_read
-            effective_input = usage.get('input_tokens', 0) - cache_read
-            self.token_stats['effective_input_tokens'] += effective_input
-            
-            # 打印当前请求的统计信息
-            print(f"📊 本次请求 Token 统计:")
-            print(f"   输入: {usage.get('input_tokens', 0)} (缓存: {cache_read}, 有效: {effective_input})")
-            print(f"   输出: {usage.get('output_tokens', 0)}")
-            print(f"   总计: {usage.get('total_tokens', 0)}")
-
-    def get_token_summary(self) -> dict:
-        """获取 token 使用摘要"""
-        session_duration = datetime.now() - self.token_stats['session_start_time']
-        
-        return {
-            'session_duration': str(session_duration).split('.')[0],  # 去掉微秒
-            'total_requests': self.token_stats['total_requests'],
-            'total_input_tokens': self.token_stats['total_input_tokens'],
-            'total_output_tokens': self.token_stats['total_output_tokens'],
-            'total_cache_tokens': self.token_stats['total_cache_tokens'],
-            'effective_input_tokens': self.token_stats['effective_input_tokens'],
-            'cache_efficiency': f"{(self.token_stats['total_cache_tokens'] / max(self.token_stats['total_input_tokens'], 1) * 100):.1f}%",
-            'total_effective_tokens': self.token_stats['effective_input_tokens'] + self.token_stats['total_output_tokens']
-        }
-
-    def print_token_summary(self):
-        """打印 token 使用摘要"""
-        summary = self.get_token_summary()
-        
-        print("\n" + "="*50)
-        print("📈 会话 Token 使用统计")
-        print("="*50)
-        print(f"会话时长: {summary['session_duration']}")
-        print(f"总请求数: {summary['total_requests']}")
-        print(f"总输入 Token: {summary['total_input_tokens']}")
-        print(f"  - 缓存 Token: {summary['total_cache_tokens']} ({summary['cache_efficiency']})")
-        print(f"  - 有效输入 Token: {summary['effective_input_tokens']}")
-        print(f"总输出 Token: {summary['total_output_tokens']}")
-        print(f"实际计费 Token: {summary['total_effective_tokens']}")
-        print(f"缓存节省比例: {summary['cache_efficiency']}")
-        print("="*50)
+        return {"messages": [response]}    
 
     async def _call_tool(self, state: AgentState) -> dict:
         """
@@ -483,8 +437,7 @@ f _update_token_stats(self, response):
                 print(f"AsyncReAct Agent: 抱歉，我遇到了一些麻烦：{e}")
             
             print("-" * 30)
-# 
--------------------- 3. 主程序入口 --------------------
+# -------------------- 3. 主程序入口 --------------------
 async def main():
     import sys
     import argparse
@@ -510,7 +463,6 @@ async def main():
     tools_list = [
         my_search_tool,     # 搜索工具
         get_today_async,    # 异步版本的日期工具
-        get_weather_async,  # 异步版本的天气工具
         get_historical_events_on_date_async,  # 异步版本的历史事件工具
         get_user_info_async # 异步版本的用户信息工具
     ]
