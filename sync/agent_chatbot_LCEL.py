@@ -64,7 +64,6 @@ def get_user_info(user_id: str) -> str:
     except Exception as e:
         return f"调用 API 时发生未知错误: {e}"
 
-
 @tool
 def get_today() -> str:
     """获取当前系统的日期。
@@ -530,7 +529,45 @@ if __name__ == "__main__":
         get_today,          # @tool 装饰器让函数本身就可以被当作工具实例使用
         get_historical_events_on_date  # 已添加网络错误处理
     ]
-    
+    print(tools_list)
+    '''装饰后的结构
+[
+TavilySearchResults(
+	name='internet_search_engine', 
+	description='Use this tool to search the internet for up-to-date information.', 
+	max_results=2, 
+	api_wrapper=TavilySearchAPIWrapper(tavily_api_key=SecretStr('**********'))
+	), 
+
+StructuredTool(
+	name='get_user_info', 
+	description='从公司内部系统中查询指定ID的用户信息。\n\n这个工具用于访问内部用户数据库，以获取特定用户的详细资料，\n如用户名、电子邮件地址和会员等级。\n\nArgs:\n    user_id (str): 需要查询的用户的唯一标识符，例如 "user_101"。\n\nReturns:\n    str: 一个描述用户信息的字符串。如果查询成功，会包含用户名、邮箱和会员等级。\n         如果用户ID 不存在或发生其他错误，会返回一条明确的错误信息。', 
+	args_schema=<class 'langchain_core.utils.pydantic.get_user_info'>, 
+	func=<function get_user_info at 0x0000029178630AE0>
+	), 
+
+StructuredTool(
+	name='get_today', 
+	description="获取当前系统的日期。\n\n这个函数不接收任何参数，它会返回今天的日期。\n\nReturns:\n    str: 一个表示今天日期的字符串，格式为 'YYYY-MM-DD'。", 
+	args_schema=<class 'langchain_core.utils.pydantic.get_today'>, 
+	func=<function get_today at 0x000002917EBB49A0>
+	), 
+
+StructuredTool(
+	name='get_historical_events_on_date', 
+	description='查询在指定月份和日期，历史上发生了哪些重大事件。\n\n这个工具需要你提供月份和日期两个数字作为参数。\n例如，要查询5月24日的历史事件，你应该调用此工具并传入 month=5, day=24。\n\nArgs:\n    month (int): 月份，一个从 1 到 12 的数字。\n    day (int): 日期，一个从 1 到 31 的数字。\n\nReturns:\n    str: 一个描述当天历史事件的字符串列表，如果查询失败则返回错误信息。', 
+	args_schema=<class 'langchain_core.utils.pydantic.get_historical_events_on_date'>, 
+	func=<function get_historical_events_on_date at 0x000002917F570A40>
+	),
+	
+MCPToolWrapper(
+	name = 'calculate_bmi', 
+	description = '通过给定的体重和身高计算BMI指数。\n\nArgs:\n    weight_kg (float): 用户的体重，单位为公斤(kg)。\n    height_m (float): 用户的身高，单 位为米(m)。\n\nReturns:\n    float: 计算得出的BMI指数值。', 
+	call_mcp_tool =  < bound method MCPToolAdapter.call_mcp_tool of < __main__.MCPToolAdapter object at 0x000001F7203EAA50 >> , 
+	call_mcp_tool_async =  < bound method MCPToolAdapter.call_mcp_tool_async of < __main__.MCPToolAdapter object at 0x000001F7203EAA50 >> )
+]
+    '''
+
     # 如果没有禁用MCP工具，则尝试加载MCP工具
     if not args.no_mcp:
         # 加载第一个MCP服务器的工具
