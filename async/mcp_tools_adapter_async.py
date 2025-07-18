@@ -1,3 +1,7 @@
+# conda env mcp_env ,Python版本 3.10.18
+#如果要测试mcp server,先把prox关闭，fastmcp_server_async.py跑起来：python fastmcp_server_async.py
+#使用python mcp_tools_adapter_async.py http://127.0.0.1:8084/my-custom-path
+
 """
 MCP工具适配器 (异步版本) - 将MCP Server工具转换为LangChain工具
 """
@@ -81,19 +85,22 @@ class MCPToolAdapter:
             # 这会设置所有实例属性
             super().__init__(**kwargs)
         
-        def _run(self, tool_input, **kwargs):
+        def _run(self, tool_input=None, **kwargs):
             """
             同步运行工具
             
             Args:
-                tool_input: 工具输入，可以是字典、字符串或其他类型
+                tool_input: 工具输入，可以是字典、字符串或其他类型，默认为None
                 **kwargs: 额外参数，可能由LangChain框架传入
             """
             # 打印工具名称，验证self.name的存在
             print(f"调用工具: {self.name}")
             
+            # 处理tool_input为None的情况
+            if tool_input is None:
+                return self.call_mcp_tool(self.name)
             # 如果tool_input是字典，合并它和kwargs
-            if isinstance(tool_input, dict):
+            elif isinstance(tool_input, dict):
                 combined_kwargs = {**tool_input, **kwargs}
                 return self.call_mcp_tool(self.name, **combined_kwargs)
             # 如果tool_input是字符串但为空，只传递kwargs
@@ -106,27 +113,18 @@ class MCPToolAdapter:
             else:
                 return self.call_mcp_tool(self.name, input=tool_input, **kwargs)
             
-        async def _arun(self, tool_input, **kwargs):
+        async def _arun(self, **kwargs):
             """
-            异步运行工具
+            异步运行工具 - 重写为不需要tool_input参数的版本
             
             Args:
-                tool_input: 工具输入，可以是字典、字符串或其他类型
                 **kwargs: 额外参数，可能由LangChain框架传入
             """
-            # 如果tool_input是字典，合并它和kwargs
-            if isinstance(tool_input, dict):
-                combined_kwargs = {**tool_input, **kwargs}
-                return await self.call_mcp_tool_async(self.name, **combined_kwargs)
-            # 如果tool_input是字符串但为空，只传递kwargs
-            elif isinstance(tool_input, str) and not tool_input:
-                if kwargs:
-                    return await self.call_mcp_tool_async(self.name, **kwargs)
-                else:
-                    return await self.call_mcp_tool_async(self.name)
-            # 其他情况，将tool_input作为input参数，并合并kwargs
+            # 直接调用MCP工具，传递kwargs
+            if kwargs:
+                return await self.call_mcp_tool_async(self.name, **kwargs)
             else:
-                return await self.call_mcp_tool_async(self.name, input=tool_input, **kwargs)
+                return await self.call_mcp_tool_async(self.name)
     
     def create_langchain_tool(self, mcp_tool):
         """
@@ -262,7 +260,7 @@ if __name__ == "__main__":
             for i in range(5):  # 调用5次
                 for tool in async_tools:
                     if tool.name == "get_current_time":
-                        tasks.append(tool._arun(""))
+                        tasks.append(tool._arun())
             results = await asyncio.gather(*tasks)
             async_call_time = time.time() - start_time
             print(f"异步调用工具耗时: {async_call_time:.4f} 秒")

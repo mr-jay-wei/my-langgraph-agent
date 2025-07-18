@@ -15,18 +15,17 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_deepseek import ChatDeepSeek
-# from langchain_tavily import TavilySearch  # 暂时注释掉，避免模块导入问题
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.graph import StateGraph, END
 from langchain.tools.render import render_text_description
 from pprint import pprint
-from langchain.tools import tool
+from langchain_core.tools import tool
 # 加载环境变量
 from dotenv import load_dotenv, find_dotenv
 _ = load_dotenv(find_dotenv())
 
 # 导入MCP工具适配器 (异步版本)
-from mcp_tools_adapter_async import get_mcp_tools_as_langchain, get_mcp_tools_as_langchain_async
+from mcp_tools_adapter_async import get_mcp_tools_as_langchain_async
 
 # 【新增】定义调用 FastAPI 服务的工具 (异步版本)
 API_BASE_URL = "http://127.0.0.1:8001" # 定义 API 的基础 URL (异步版本)
@@ -148,7 +147,6 @@ class AsyncReActAgent:
             'session_start_time': datetime.now()
         }
 
-  
     def _update_token_stats(self, response):
         """更新 token 统计信息"""
         if hasattr(response, 'usage_metadata') and response.usage_metadata:
@@ -237,7 +235,7 @@ class AsyncReActAgent:
         【异步版本】私有方法：使用自定义 Prompt 调用大模型。
         """
         messages = state['messages']
-        print(f"llm message: {messages}")
+        # print(f"llm message: {messages}")
         # 1. 定义你的 Prompt 模板
         #    这个模板会接收 'messages' 和 'tools' 作为输入变量
         prompt = ChatPromptTemplate.from_messages(
@@ -311,7 +309,7 @@ class AsyncReActAgent:
         这是图中的 "action" 节点。
         """
         last_message = state['messages'][-1]
-        print(f"tool message: {last_message}")
+        # print(f"tool message: {last_message}")
         
         if not last_message.tool_calls:
             return {}
@@ -322,15 +320,22 @@ class AsyncReActAgent:
             if tool_name in self.tools_map:
                 tool_to_call = self.tools_map[tool_name]
                 try:
-                    # 异步调用工具并获取输出
-                    if hasattr(tool_to_call, '_arun'):
-                        tool_output = await tool_to_call._arun(**tool_call['args'])
+                    # 使用 ainvoke 方法进行异步调用
+                    if hasattr(tool_to_call, 'ainvoke'):
+                        # 使用推荐的 ainvoke 方法
+                        tool_output = await tool_to_call.ainvoke(tool_call['args'])
+                    elif hasattr(tool_to_call, '_arun'):
+                        # 如果只有 _arun 方法，添加必需的 config 参数
+                        tool_output = await tool_to_call._arun(**tool_call['args'], config={})
                     else:
                         # 如果工具没有异步方法，则使用同步方法
                         tool_output = tool_to_call.invoke(tool_call['args'])
                     
                     # 将结构化输出序列化为字符串
-                    tool_output_str = json.dumps(tool_output, ensure_ascii=False)
+                    if isinstance(tool_output, str):
+                        tool_output_str = tool_output
+                    else:
+                        tool_output_str = json.dumps(tool_output, ensure_ascii=False)
                     
                     tool_messages.append(
                         ToolMessage(
@@ -451,9 +456,6 @@ async def main():
     parser.add_argument('--no-mcp', 
                       action='store_true',
                       help='禁用MCP工具，即使提供了--mcp参数')
-    parser.add_argument('--perf-test',
-                      action='store_true',
-                      help='运行性能测试，比较同步和异步版本')
     args = parser.parse_args()
 
     # a. 初始化基础工具
@@ -477,15 +479,7 @@ async def main():
             mcp_tools = await get_mcp_tools_as_langchain_async(args.mcp)
             async_time = time.time() - start_time
             print(f"异步加载MCP工具耗时: {async_time:.4f} 秒")
-            
-            # 对比同步方法的性能
-            if args.perf_test:
-                start_time = time.time()
-                sync_tools = get_mcp_tools_as_langchain(args.mcp)
-                sync_time = time.time() - start_time
-                print(f"同步加载MCP工具耗时: {sync_time:.4f} 秒")
-                print(f"性能提升: {(sync_time - async_time) / sync_time * 100:.2f}%")
-            
+                      
             print(f"成功加载 {len(mcp_tools)} 个MCP工具:")
             for tool in mcp_tools:
                 print(f"- {tool.name}: {tool.description}")
@@ -498,7 +492,7 @@ async def main():
         print("MCP工具已禁用，将仅使用基础工具集。")
     
     # b. 初始化模型并绑定工具
-    # llm = ChatOpenAI(temperature=0, model="gpt-4o") # 使用 gpt-4o 或 gpt-3.5-turbo 等
+    # llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo") # 使用 gpt-4o 或 gpt-3.5-turbo 等
     llm = ChatDeepSeek(model="deepseek-chat", temperature=0, streaming=True)
 
     # c. 创建 Agent 实例
@@ -513,80 +507,6 @@ async def main():
     # --- 使用方式二：启动交互式聊天 ---
     print("\n--- 交互式聊天示例 ---")
     await my_agent.chat()
-
-# -------------------- 4. 性能测试 --------------------
-async def performance_test():
-    """运行性能测试，比较同步和异步版本"""
-    import time
-    
-    print("\n===== 性能测试: 同步 vs 异步 =====")
-    
-    # 测试MCP工具加载性能
-    mcp_server_url = "http://127.0.0.1:8084/my-custom-path"
-    
-    # 测试同步工具获取
-    start_time = time.time()
-    sync_tools = get_mcp_tools_as_langchain(mcp_server_url)
-    sync_time = time.time() - start_time
-    print(f"同步获取MCP工具列表耗时: {sync_time:.4f} 秒")
-    
-    # 测试异步工具获取
-    start_time = time.time()
-    async_tools = await get_mcp_tools_as_langchain_async(mcp_server_url)
-    async_time = time.time() - start_time
-    print(f"异步获取MCP工具列表耗时: {async_time:.4f} 秒")
-    print(f"性能提升: {(sync_time - async_time) / sync_time * 100:.2f}%")
-    
-    # 测试工具调用性能
-    print("\n===== 工具调用性能测试 =====")
-    
-    # 测试同步天气查询
-    start_time = time.time()
-    cities = ["Beijing", "Shanghai", "Tokyo", "New York", "London"]
-    results = []
-    for city in cities:
-        from agent_chatbot_LCEL import get_weather
-        result = get_weather(city)
-        results.append(result)
-    sync_time = time.time() - start_time
-    print(f"同步查询5个城市天气耗时: {sync_time:.4f} 秒")
-    
-    # 测试异步天气查询
-    start_time = time.time()
-    tasks = []
-    for city in cities:
-        task = get_weather_async(city)
-        tasks.append(task)
-    results = await asyncio.gather(*tasks)
-    async_time = time.time() - start_time
-    print(f"异步查询5个城市天气耗时: {async_time:.4f} 秒")
-    print(f"性能提升: {(sync_time - async_time) / sync_time * 100:.2f}%")
-    
-    # 测试用户API性能
-    print("\n===== 用户API性能测试 =====")
-    
-    # 同步API调用
-    start_time = time.time()
-    user_ids = ["user_101", "user_102", "user_103", "user_101", "user_102"]
-    results = []
-    for user_id in user_ids:
-        import requests
-        response = requests.get(f"http://127.0.0.1:8001/users/{user_id}")
-        if response.status_code == 200:
-            results.append(response.json())
-    sync_time = time.time() - start_time
-    print(f"同步查询5个用户信息耗时: {sync_time:.4f} 秒")
-    
-    # 异步API调用
-    start_time = time.time()
-    tasks = []
-    for user_id in user_ids:
-        task = get_user_info_async(user_id)
-        tasks.append(task)
-    results = await asyncio.gather(*tasks)
-    async_time = time.time() - start_time
-    print(f"异步查询5个用户信息耗时: {async_time:.4f} 秒")
-    print(f"性能提升: {(sync_time - async_time) / sync_time * 100:.2f}%")
 
 if __name__ == "__main__":
     # 运行主程序
