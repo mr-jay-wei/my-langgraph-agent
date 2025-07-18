@@ -42,7 +42,7 @@
 │
 ├── .gitignore                     # Git忽略文件配置
 ├── requirements.txt               # 依赖包列表
-└── readme_zh.md                   # 项目总体说明文档(中文)
+└── README.md                   # 项目总体说明文档(中文)
 ```
 
 ## 核心理念
