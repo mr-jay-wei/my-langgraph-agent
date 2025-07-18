@@ -266,7 +266,7 @@ class AsyncReActAgent:
                             - 反思，我是否有更合理的方法来查询一个概念或子要素?
                         B. 根据以上分析，排列子要素间的查询优先级
                         C. 找出当前需要获得取值的子要素
-                        D. 不可以使用"假设"：不要对子要素的取值/定义做任何假设，确保你的信息全部来自明确的数据源！
+                        D. 不可以使用假设：不要对子要素的取值/定义做任何假设，确保你的信息全部来自明确的数据源！
                     **推理**: 根据你的反思与思考，一步步推理被选择的子要素取值的获取方式。如果前一次的计划失败了，请检查输入中是否包含每个概念/子要素的明确定义，并尝试细化你的查询描述。
                     **计划**: 详细列出当前动作的执行计划。只计划一步的动作。PLAN ONE STEP ONLY!
                     **计划校验**: 按照一些步骤一步步分析
@@ -452,10 +452,13 @@ async def main():
     parser = argparse.ArgumentParser(description='启动AsyncReAct Agent，可选择是否集成MCP工具')
     parser.add_argument('--mcp', 
                       default='http://127.0.0.1:8084/my-custom-path',
-                      help='MCP服务器URL，默认为 http://127.0.0.1:8084/my-custom-path')
+                      help='主MCP服务器URL，默认为 http://127.0.0.1:8084/my-custom-path')
+    parser.add_argument('--mcp2', 
+                      default='http://127.0.0.1:8087/my-custom-path',
+                      help='第二个MCP服务器URL，默认为 http://127.0.0.1:8087/my-custom-path')
     parser.add_argument('--no-mcp', 
                       action='store_true',
-                      help='禁用MCP工具，即使提供了--mcp参数')
+                      help='禁用所有MCP工具')
     args = parser.parse_args()
 
     # a. 初始化基础工具
@@ -470,24 +473,45 @@ async def main():
     ]
     
     # 如果提供了MCP服务器URL且没有禁用MCP工具，则加载MCP工具
-    if args.mcp and not args.no_mcp:
-        try:
-            print(f"正在连接MCP服务器: {args.mcp}")
-            
-            # 使用异步方法获取MCP工具
-            start_time = time.time()
-            mcp_tools = await get_mcp_tools_as_langchain_async(args.mcp)
-            async_time = time.time() - start_time
-            print(f"异步加载MCP工具耗时: {async_time:.4f} 秒")
-                      
-            print(f"成功加载 {len(mcp_tools)} 个MCP工具:")
-            for tool in mcp_tools:
-                print(f"- {tool.name}: {tool.description}")
-            # 将MCP工具添加到工具列表
-            tools_list.extend(mcp_tools)
-        except Exception as e:
-            print(f"加载MCP工具失败: {e}")
-            print("将继续使用基础工具集...")
+    if not args.no_mcp:
+        if args.mcp:
+            try:
+                print(f"正在连接主MCP服务器: {args.mcp}")
+                
+                # 使用异步方法获取MCP工具
+                start_time = time.time()
+                mcp_tools = await get_mcp_tools_as_langchain_async(args.mcp)
+                async_time = time.time() - start_time
+                print(f"异步加载主MCP工具耗时: {async_time:.4f} 秒")
+                          
+                print(f"成功加载 {len(mcp_tools)} 个MCP工具:")
+                for tool in mcp_tools:
+                    print(f"- {tool.name}: {tool.description}")
+                # 将MCP工具添加到工具列表
+                tools_list.extend(mcp_tools)
+            except Exception as e:
+                print(f"加载主MCP工具失败: {e}")
+                print("将尝试连接第二个MCP服务器...")
+                
+        if args.mcp2:
+            try:
+                print(f"正在连接第二个MCP服务器: {args.mcp2}")
+                
+                # 使用异步方法获取MCP工具
+                start_time = time.time()
+                mcp_tools = await get_mcp_tools_as_langchain_async(args.mcp2)
+                async_time = time.time() - start_time
+                print(f"异步加载第二个MCP工具耗时: {async_time:.4f} 秒")
+                          
+                print(f"成功加载 {len(mcp_tools)} 个MCP工具:")
+                for tool in mcp_tools:
+                    print(f"- {tool.name}: {tool.description}")
+                # 将MCP工具添加到工具列表
+                tools_list.extend(mcp_tools)
+            except Exception as e:
+                print(f"加载第二个MCP工具失败: {e}")
+                print("将继续使用已加载的工具...")
+        
     elif args.no_mcp:
         print("MCP工具已禁用，将仅使用基础工具集。")
     
