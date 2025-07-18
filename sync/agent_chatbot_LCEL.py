@@ -20,7 +20,8 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.graph import StateGraph, END
 from langchain.tools.render import render_text_description
 from pprint import pprint
-from langchain.tools import tool
+# from langchain.tools import tool
+from langchain_core.tools import tool
 # 加载环境变量
 from dotenv import load_dotenv, find_dotenv
 _ = load_dotenv(find_dotenv())
@@ -237,7 +238,7 @@ class ReActAgent:
         【重大修改】私有方法：使用自定义 Prompt 调用大模型。
         """
         messages = state['messages']
-        print(f"llm message: {messages}")
+        # print(f"llm message: {messages}")
         # 1. 定义你的 Prompt 模板
         #    这个模板会接收 'messages' 和 'tools' 作为输入变量
         prompt = ChatPromptTemplate.from_messages(
@@ -268,7 +269,7 @@ class ReActAgent:
                             - 反思，我是否有更合理的方法来查询一个概念或子要素?
                         B. 根据以上分析，排列子要素间的查询优先级
                         C. 找出当前需要获得取值的子要素
-                        D. 不可以使用“假设”：不要对子要素的取值/定义做任何假设，确保你的信息全部来自明确的数据源！
+                        D. 不可以使用假设：不要对子要素的取值/定义做任何假设，确保你的信息全部来自明确的数据源！
                     **推理**: 根据你的反思与思考，一步步推理被选择的子要素取值的获取方式。如果前一次的计划失败了，请检查输入中是否包含每个概念/子要素的明确定义，并尝试细化你的查询描述。
                     **计划**: 详细列出当前动作的执行计划。只计划一步的动作。PLAN ONE STEP ONLY!
                     **计划校验**: 按照一些步骤一步步分析
@@ -529,7 +530,7 @@ if __name__ == "__main__":
         get_today,          # @tool 装饰器让函数本身就可以被当作工具实例使用
         get_historical_events_on_date  # 已添加网络错误处理
     ]
-    print(tools_list)
+    # print(tools_list)
     '''装饰后的结构
 [
 TavilySearchResults(
